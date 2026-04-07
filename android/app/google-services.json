@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "52286510081",
+    "firebase_url": "https://kaiottapp-default-rtdb.firebaseio.com",
+    "project_id": "kaiottapp",
+    "storage_bucket": "kaiottapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:52286510081:android:1463b894d4f3f569ce5c00",
+        "android_client_info": {
+          "package_name": "com.example.smartmailbox1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBhmtSyf-3wXQFCTgLA3b1nayiaHxzVIwk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
