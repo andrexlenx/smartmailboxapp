@@ -241,12 +241,18 @@ class FirebaseEvent {
       final DateTime dt = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
       formattedDate = "${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
     }
+    
+    // filter data if wrapped
+    Map<dynamic, dynamic> innerData = data;
+    if (data.isNotEmpty && data.values.first is Map) {
+      innerData = data.values.first as Map<dynamic, dynamic>;
+    }
 
     return FirebaseEvent(
       date: formattedDate,
       rawTimestamp: timestamp,
-      type: data['classification']?.toString() ?? 'Sconosciuto',
-      weight: data['weight'] is num ? (data['weight'] as num).toInt() : int.tryParse(data['weight']?.toString() ?? '0') ?? 0,
+      type: innerData['classification']?.toString() ?? 'Sconosciuto',
+      weight: innerData['weight'] is num ? (innerData['weight'] as num).toInt() : int.tryParse(innerData['weight']?.toString() ?? '0') ?? 0,
     );
   }
 }
