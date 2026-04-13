@@ -99,6 +99,12 @@ class MyAppState extends ChangeNotifier {
       sound: true,
     );
     permsgranted = settings.authorizationStatus == AuthorizationStatus.authorized;
+    if (permsgranted) {
+      await FirebaseMessaging.instance.subscribeToTopic('new_mail');
+      print("Subscribed to new_mail topic");
+    }
+    String? token = await messaging.getToken();
+    print("Token FCM: $token");
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       print('Ricevuto messaggio in foreground: ${message.notification?.title}');
     });
