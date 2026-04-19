@@ -92,7 +92,48 @@ class _SettingsPageState extends State<SettingsPage> {
                 appState.permsgranted ? Icons.check_circle : Icons.cancel,
                 color: appState.permsgranted ? Colors.green : Colors.red,
               ),
-            )
+            ),
+            const Divider(),
+            const SizedBox(height: 8),
+            Text(
+              'Gestione Dati',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              title: const Text("Cancella tutti gli eventi"),
+              subtitle: const Text("Rimuove permanentemente tutti i record dal database"),
+              trailing: const Icon(Icons.delete_forever, color: Colors.red),
+              onTap: () {
+                showDialog(
+                  context: context,
+                  builder: (BuildContext context) {
+                    return AlertDialog(
+                      title: const Text("Conferma eliminazione"),
+                      content: const Text("Sei sicuro di voler cancellare tutti gli eventi? Questa azione non è reversibile."),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text("Annulla"),
+                        ),
+                        TextButton(
+                          onPressed: () async {
+                            await appState.clearEvents();
+                            if (context.mounted) {
+                              Navigator.of(context).pop();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Eventi cancellati con successo')),
+                              );
+                            }
+                          },
+                          child: const Text("Elimina", style: TextStyle(color: Colors.red)),
+                        ),
+                      ],
+                    );
+                  },
+                );
+              },
+            ),
           ],
         ),
       ),

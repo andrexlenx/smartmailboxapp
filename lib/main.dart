@@ -178,6 +178,12 @@ class MyAppState extends ChangeNotifier {
     connectToDatabase();
   }
 
+  Future<void> clearEvents() async {
+    if (firebaseendpoint.isNotEmpty) {
+      await FirebaseDatabase.instance.ref(firebaseendpoint).remove();
+    }
+  }
+
   @override
   void dispose() {
     _dbSubscription?.cancel();
