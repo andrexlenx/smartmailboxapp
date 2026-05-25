@@ -1,44 +1,35 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:crypto/crypto.dart';
+import 'package:encrypt/encrypt.dart' as encrypt;
 import 'firebase_options.dart';
 
 import 'pages/home.dart';
 import 'pages/settings.dart';
 
-// Gestore delle notifiche in background
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
     if (Firebase.apps.isEmpty) {
       await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
     }
-  } catch (e) {
-    if (!e.toString().contains('duplicate-app')) {
-      rethrow;
-    }
-  }
-  print("Gestendo un messaggio in background: ${message.messageId}");
+  } catch (e) {}
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
   try {
     if (Firebase.apps.isEmpty) {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
+      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
     }
-  } catch (e) {
-    if (!e.toString().contains('duplicate-app')) {
-      rethrow;
-    }
-  }
+  } catch (e) {}
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
   runApp(
@@ -70,6 +61,20 @@ class App extends StatelessWidget {
   }
 }
 
+class MailboxInfo {
+  final String gatewayMac;
+  final String name;
+  final List<FirebaseEvent> events;
+  bool hasUnread;
+
+  MailboxInfo({
+    required this.gatewayMac,
+    required this.name,
+    required this.events,
+    this.hasUnread = false,
+  });
+}
+
 class MyAppState extends ChangeNotifier {
   String firebaseendpoint = "events";
   String network = "Offline";
@@ -77,8 +82,14 @@ class MyAppState extends ChangeNotifier {
   IconData statusicon = Icons.cloud_off;
 
   bool permsgranted = false;
-  List<FirebaseEvent> events = [];
-  StreamSubscription? _dbSubscription;
+  List<String> gateways = [];
+  Map<String, String> gatewayPasswords = {}; // mac -> password
+  Map<String, int> lastReadTimestamps = {}; // mac-mailboxName -> timestamp
+
+  // gatewayMac -> { mailboxName -> MailboxInfo }
+  Map<String, Map<String, MailboxInfo>> mailboxData = {};
+  
+  final Map<String, StreamSubscription> _subscriptions = {};
   final Storage storage = Storage();
 
   MyAppState() {
@@ -111,92 +122,210 @@ class MyAppState extends ChangeNotifier {
   }
 
   void connectToDatabase() {
+    for (var sub in _subscriptions.values) {
+      sub.cancel();
+    }
+    _subscriptions.clear();
+    mailboxData.clear();
+
+    if (gateways.isEmpty) {
+      network = "No Gateways";
+      statuscolor = Colors.orange;
+      statusicon = Icons.warning;
+      notifyListeners();
+      return;
+    }
+
     network = "Connecting";
     statuscolor = Colors.yellow;
     statusicon = Icons.cloud_sync;
     notifyListeners();
 
-    _dbSubscription?.cancel();
+    for (String mac in gateways) {
+      final String? password = gatewayPasswords[mac];
+      if (password == null) continue;
 
-    if (firebaseendpoint.isNotEmpty) {
-      try {
-        _dbSubscription = FirebaseDatabase.instance
-            .ref(firebaseendpoint)
-            .onValue
-            .listen((DatabaseEvent event) {
-          
-          final data = event.snapshot.value;
-          List<FirebaseEvent> loadedEvents = [];
-          print("debug data snapshot: $data");
-          
-          if (data != null && data is Map) {
-            data.forEach((key, value) {
-              if (value is Map) {
+      _subscriptions[mac] = FirebaseDatabase.instance
+          .ref("$firebaseendpoint/$mac")
+          .onValue
+          .listen((DatabaseEvent event) {
+        
+        final dynamic val = event.snapshot.value;
+        print("debug data for $mac: $val");
+        Map<String, MailboxInfo> mailboxes = {};
 
-                final int? timestamp = int.tryParse(key.toString());
-                if (timestamp != null) {
-                  loadedEvents.add(FirebaseEvent.fromMap(key.toString(), Map<String, dynamic>.from(value)));
-                }
+        if (val != null) {
+           _processDatabaseValue(mac, password, val, mailboxes);
+        }
+        
+        mailboxData[mac] = mailboxes;
+        network = "Online";
+        statuscolor = Colors.green;
+        statusicon = Icons.cloud_done;
+        notifyListeners();
+      }, onError: (e) {
+        print("Error for $mac: $e");
+      });
+    }
+  }
+
+  void _processDatabaseValue(String mac, String password, dynamic val, Map<String, MailboxInfo> mailboxes) {
+    List<String> encryptedRecords = [];
+
+    if (val is Map) {
+      val.forEach((key, subVal) {
+        if (subVal is Map) {
+          if (subVal.containsKey('payload') && subVal['payload'] is String) {
+            encryptedRecords.add(subVal['payload']);
+          } else {
+            subVal.forEach((k2, v2) {
+              if (v2 is String) {
+                encryptedRecords.add(v2);
               }
             });
-            // Ordina per timestamp decrescente
-            loadedEvents.sort((a, b) => b.rawTimestamp.compareTo(a.rawTimestamp));
           }
+        } else if (subVal is String) {
+          encryptedRecords.add(subVal);
+        } else if (subVal is List) {
+           encryptedRecords.addAll(subVal.whereType<String>());
+        }
+      });
+    } else if (val is List) {
+      encryptedRecords = val.whereType<String>().toList();
+    }
 
-          events = loadedEvents;
-          network = "Online";
-          statuscolor = Colors.green;
-          statusicon = Icons.cloud_done;
-          notifyListeners();
+    if (encryptedRecords.isEmpty) return;
 
-        }, onError: (error) {
-          network = "Connection Failed";
-          statuscolor = Colors.orange;
-          statusicon = Icons.error;
-          notifyListeners();
-          print("Errore durante la connessione al database: $error");
-        });
+    final keyBytes = sha256.convert(utf8.encode(password)).bytes;
+    final key = encrypt.Key(Uint8List.fromList(keyBytes));
+
+    Map<String, List<FirebaseEvent>> tempMailboxes = {};
+
+    for (String base64Data in encryptedRecords) {
+      try {
+        final decoded = base64.decode(base64Data);
+        if (decoded.length < 16) continue;
+
+        final iv = encrypt.IV(decoded.sublist(0, 16));
+        final payload = decoded.sublist(16);
+
+        final encrypter = encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
+        final decrypted = encrypter.decrypt(encrypt.Encrypted(payload), iv: iv);
+
+        final Map<String, dynamic> data = json.decode(decrypted);
+        final event = FirebaseEvent.fromJson(data);
+        final mailboxName = event.mailboxName;
+        if (!tempMailboxes.containsKey(mailboxName)) {
+          tempMailboxes[mailboxName] = [];
+        }
+        tempMailboxes[mailboxName]!.add(event);
       } catch (e) {
-        network = "Offline";
-        statuscolor = Colors.red;
-        statusicon = Icons.cloud_off;
-        notifyListeners();
+        print("Decryption error: $e");
       }
+    }
+
+    tempMailboxes.forEach((name, eventsList) {
+      eventsList.sort((a, b) => b.rawTimestamp.compareTo(a.rawTimestamp));
+      
+      // Logic changed: hasUnread if latest event is newer than lastReadTimestamp
+      int lastRead = lastReadTimestamps["$mac-$name"] ?? 0;
+      bool unread = eventsList.isNotEmpty && eventsList.first.rawTimestamp > lastRead;
+
+      mailboxes[name] = MailboxInfo(
+        gatewayMac: mac,
+        name: name,
+        events: eventsList,
+        hasUnread: unread,
+      );
+    });
+  }
+
+  Future<void> markAsRead(String mac, String mailboxName) async {
+    final key = "$mac-$mailboxName";
+    final mailbox = mailboxData[mac]?[mailboxName];
+    if (mailbox != null && mailbox.events.isNotEmpty) {
+      lastReadTimestamps[key] = mailbox.events.first.rawTimestamp;
+      mailbox.hasUnread = false;
+      await _saveSettings();
+      notifyListeners();
     }
   }
 
   Future<void> readSettings() async {
-    String savedEndpoint = await storage.readString("FBendpoint");
-    if (savedEndpoint.isNotEmpty) {
-      firebaseendpoint = savedEndpoint;
-    }
-  }
+    gateways = await storage.readList("gateways");
+    final List<String> passwords = await storage.readList("passwords");
+    final String? timestampsJson = await storage.readString("lastReadTimestamps");
 
-  Future<void> updateEndpoint(String newEndpoint) async {
-    firebaseendpoint = newEndpoint;
-    await storage.writeString("FBendpoint", newEndpoint);
-    connectToDatabase();
+    gatewayPasswords.clear();
+    for (int i = 0; i < gateways.length && i < passwords.length; i++) {
+      gatewayPasswords[gateways[i]] = passwords[i];
+    }
+
+    if (timestampsJson != null) {
+      try {
+        Map<String, dynamic> decoded = json.decode(timestampsJson);
+        lastReadTimestamps = decoded.map((key, value) => MapEntry(key, value as int));
+      } catch (e) {
+        print("Error loading timestamps: $e");
+      }
+    }
+
+    notifyListeners();
   }
 
   Future<void> clearEvents() async {
-    if (firebaseendpoint.isNotEmpty) {
-      await FirebaseDatabase.instance.ref(firebaseendpoint).remove();
+    for (String mac in gateways) {
+      await FirebaseDatabase.instance.ref("$firebaseendpoint/$mac").remove();
     }
+  }
+
+  Future<void> addGateway(String mac, String password) async {
+    if (!gateways.contains(mac)) {
+      gateways.add(mac);
+      gatewayPasswords[mac] = password;
+      await _saveSettings();
+      connectToDatabase();
+    }
+  }
+
+  Future<void> removeGateway(String mac) async {
+    gateways.remove(mac);
+    gatewayPasswords.remove(mac);
+    mailboxData.remove(mac);
+    // Optional: remove related lastReadTimestamps keys here if desired
+    await _saveSettings();
+    connectToDatabase();
+  }
+
+  Future<void> _saveSettings() async {
+    await storage.writeList("gateways", gateways);
+    List<String> passwords = gateways.map((mac) => gatewayPasswords[mac] ?? "").toList();
+    await storage.writeList("passwords", passwords);
+    await storage.writeString("lastReadTimestamps", json.encode(lastReadTimestamps));
   }
 
   @override
   void dispose() {
-    _dbSubscription?.cancel();
+    for (var sub in _subscriptions.values) {
+      sub.cancel();
+    }
     super.dispose();
   }
 }
 
 class Storage {
-  Future<String> readString(String key) async {
+  Future<List<String>> readList(String key) async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(key) ?? '';
+    return prefs.getStringList(key) ?? [];
   }
-
+  Future<void> writeList(String key, List<String> value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(key, value);
+  }
+  Future<String?> readString(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(key);
+  }
   Future<void> writeString(String key, String value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(key, value);
@@ -205,7 +334,6 @@ class Storage {
 
 class ServerAppBar extends StatelessWidget {
   const ServerAppBar({super.key});
-
   @override
   Widget build(BuildContext context) {
     var appState = context.watch<MyAppState>();
@@ -242,29 +370,29 @@ class FirebaseEvent {
   final String type;
   final int weight;
   final int rawTimestamp;
+  final String mailboxName;
 
-  FirebaseEvent({required this.date, required this.type, required this.weight, required this.rawTimestamp});
+  FirebaseEvent({
+    required this.date,
+    required this.type,
+    required this.weight,
+    required this.rawTimestamp,
+    required this.mailboxName,
+  });
 
-  factory FirebaseEvent.fromMap(String key, Map<String, dynamic> data) {
-    int timestamp = int.tryParse(key) ?? 0;
-    String formattedDate = key;
-    
+  factory FirebaseEvent.fromJson(Map<String, dynamic> data) {
+    int timestamp = data['time'] is num ? (data['time'] as num).toInt() : int.tryParse(data['time']?.toString() ?? '0') ?? 0;
+    String formattedDate = timestamp.toString();
     if (timestamp != 0) {
       final DateTime dt = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
       formattedDate = "${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
     }
-    
-    // filter data if wrapped
-    Map<dynamic, dynamic> innerData = data;
-    if (data.isNotEmpty && data.values.first is Map) {
-      innerData = data.values.first as Map<dynamic, dynamic>;
-    }
-
     return FirebaseEvent(
       date: formattedDate,
       rawTimestamp: timestamp,
-      type: innerData['classification']?.toString() ?? 'Sconosciuto',
-      weight: innerData['weight'] is num ? (innerData['weight'] as num).toInt() : int.tryParse(innerData['weight']?.toString() ?? '0') ?? 0,
+      type: data['classification']?.toString() ?? 'Sconosciuto',
+      weight: data['weight'] is num ? (data['weight'] as num).toInt() : int.tryParse(data['weight']?.toString() ?? '0') ?? 0,
+      mailboxName: data['mailbox']?.toString() ?? 'Principale',
     );
   }
 }

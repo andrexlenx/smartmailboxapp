@@ -10,19 +10,13 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  late TextEditingController _endpointController;
-
-  @override
-  void initState() {
-    super.initState();
-    // Inizializza il controller con il valore attuale prelevato dal Provider
-    final appState = Provider.of<MyAppState>(context, listen: false);
-    _endpointController = TextEditingController(text: appState.firebaseendpoint);
-  }
+  final TextEditingController _macController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
 
   @override
   void dispose() {
-    _endpointController.dispose();
+    _macController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
@@ -36,7 +30,7 @@ class _SettingsPageState extends State<SettingsPage> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () {
-            Navigator.pop(context); // Torna alla pagina precedente
+            Navigator.pop(context);
           },
         ),
       ),
@@ -45,49 +39,91 @@ class _SettingsPageState extends State<SettingsPage> {
         child: ListView(
           children: [
             Text(
-              'Configurazione Firebase',
+              'Gestione Gateway',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 16),
-            Row(
+            Column(
               children: [
-                Expanded(
-                  child: TextField(
-                    controller: _endpointController,
-                    decoration: const InputDecoration(
-                      labelText: 'Collection Endpoint (es. mailbox_events)',
-                      border: OutlineInputBorder(),
-                    ),
+                TextField(
+                  controller: _macController,
+                  decoration: const InputDecoration(
+                    labelText: 'MAC Address Gateway',
+                    hintText: 'es. AA:BB:CC:DD:EE:FF',
+                    border: OutlineInputBorder(),
                   ),
                 ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: () async {
-                    final fbend = _endpointController.text.trim();
-                    if (fbend.isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('L\'endpoint non può essere vuoto')),
-                      );
-                    } else {
-                      // Chiama la funzione di aggiornamento nello State
-                      await appState.updateEndpoint(fbend);
-                      if (context.mounted) {
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _passwordController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Password Decrittazione',
+                    hintText: 'Inserisci la password del gateway',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      final mac = _macController.text.trim();
+                      final password = _passwordController.text.trim();
+                      if (mac.isEmpty || password.isEmpty) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Endpoint salvato e in connessione...')),
+                          const SnackBar(content: Text('Inserisci MAC address e Password')),
                         );
-                        // Opzionale: torna indietro automaticamente dopo il salvataggio
-                        // Navigator.pop(context);
+                      } else {
+                        await appState.addGateway(mac, password);
+                        _macController.clear();
+                        _passwordController.clear();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Gateway aggiunto')),
+                          );
+                        }
                       }
-                    }
-                  },
-                  child: const Text('Salva'),
+                    },
+                    child: const Text('Aggiungi Gateway'),
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 24),
+            Text(
+              'Gateway Associati',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const Divider(),
+            if (appState.gateways.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(8.0),
+                child: Text('Nessun gateway configurato.'),
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: appState.gateways.length,
+                itemBuilder: (context, index) {
+                  final mac = appState.gateways[index];
+                  return ListTile(
+                    title: Text(mac),
+                    subtitle: const Text('Configurato con password'),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () {
+                        appState.removeGateway(mac);
+                      },
+                    ),
+                  );
+                },
+              ),
+            const SizedBox(height: 24),
             const Divider(),
             ListTile(
-              title: const Text("Stato Permessi Notifiche"),
+              title: const Text("Permessi Notifiche"),
               trailing: Icon(
                 appState.permsgranted ? Icons.check_circle : Icons.cancel,
                 color: appState.permsgranted ? Colors.green : Colors.red,
