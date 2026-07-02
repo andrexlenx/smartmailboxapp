@@ -279,13 +279,32 @@ class MyAppState extends ChangeNotifier {
     }
   }
 
-  Future<void> addGateway(String mac, String password) async {
-    if (!gateways.contains(mac)) {
-      gateways.add(mac);
-      gatewayPasswords[mac] = password;
+Future<void> addGateway(String mac, String password) async {
+    String normalizedMac = _normalizeMacInput(mac);
+
+    if (!gateways.contains(normalizedMac)) {
+      gateways.add(normalizedMac);
+      gatewayPasswords[normalizedMac] = password;
       await _saveSettings();
       connectToDatabase();
     }
+  }
+
+  String _normalizeMacInput(String input) {
+    input = input.trim();
+    
+    bool hasHexLetters = RegExp(r'[a-fA-F]').hasMatch(input);
+    bool hasSeparators = input.contains(':') || input.contains('-');
+    
+    String cleaned = input.replaceAll(RegExp(r'[^0-9a-fA-F]'), '');
+    
+    if (hasHexLetters || hasSeparators || cleaned.length == 12) {
+      int? decimalMac = int.tryParse(cleaned, radix: 16);
+      if (decimalMac != null) {
+        return decimalMac.toString();
+      }
+    }
+    return cleaned.isEmpty ? input : cleaned;
   }
 
   Future<void> removeGateway(String mac) async {
